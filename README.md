@@ -32,9 +32,10 @@ python -m compileall app.py client_portal.py luxe_ops
 
 No linter is configured.
 
-Smoke test, if `pytest` is installed:
+Smoke test:
 
 ```bash
+python -m pip install pytest
 python -m pytest luxe_ops/core/tests
 ```
 
@@ -51,3 +52,5 @@ No seed command is configured.
 ## Environment Variables
 
 No required environment variables are currently used.
+
+An `.env.example` file is included for compatibility with deployment workflows.
