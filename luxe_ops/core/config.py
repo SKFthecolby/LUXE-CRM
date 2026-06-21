@@ -10,7 +10,7 @@ DEFAULT_SETTINGS = {
     "deep_clean_base_price": "320",
     "deep_clean_overage_hourly": "75",
     "recurring_biweekly_rate": "160",
-    "max_jobs_per_day": "2",
+    "max_jobs_per_day": "8",
     "low_pipeline_threshold_14d": "3",
     "self_care_job_threshold_7d": "6",
     "archive_after_days": "180",

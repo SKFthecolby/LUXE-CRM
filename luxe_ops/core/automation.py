@@ -1,7 +1,7 @@
 import json
 from datetime import date, timedelta
 
-from .helpers import new_id, now_ts, today_str, parse_date
+from .helpers import new_id, now_ts, today_str
 from .db import DB
 
 
@@ -26,6 +26,37 @@ class AutomationEngine:
             """,
             (new_id(), now_ts(), level, category, message, json.dumps(meta or {})),
         )
+
+    def replace_alert(self, level, category, message, meta=None):
+        existing = self.db.fetchone(
+            """
+            SELECT id FROM alerts
+            WHERE category = ? AND message = ? AND resolved = 0 AND archived = 0
+            """,
+            (category, message),
+        )
+        if existing:
+            self.db.execute(
+                """
+                UPDATE alerts
+                SET resolved = 1, archived = 1
+                WHERE category = ?
+                  AND resolved = 0
+                  AND archived = 0
+                  AND id != ?
+                """,
+                (category, existing["id"]),
+            )
+            return
+        self.db.execute(
+            """
+            UPDATE alerts
+            SET resolved = 1, archived = 1
+            WHERE category = ? AND resolved = 0 AND archived = 0
+            """,
+            (category,),
+        )
+        self.push_alert(level, category, message, meta)
 
     def create_approval(self, action_type, payload, risk, reason):
         payload_json = json.dumps(payload, sort_keys=True)
@@ -92,6 +123,8 @@ class AutomationEngine:
         return status
 
     def scan(self):
+        if not self._has_operational_data():
+            return
         self.scan_overdue_leads()
         self.scan_overdue_invoices()
         self.scan_schedule_load()
@@ -99,6 +132,22 @@ class AutomationEngine:
         self.scan_self_care()
         self.auto_archive_soft()
         self.db.log("automation_scan", "scan complete")
+
+    def _has_operational_data(self):
+        row = self.db.fetchone(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM leads) +
+                (SELECT COUNT(*) FROM clients) +
+                (SELECT COUNT(*) FROM jobs) +
+                (SELECT COUNT(*) FROM invoices) +
+                (SELECT COUNT(*) FROM expenses) +
+                (SELECT COUNT(*) FROM quotes) +
+                (SELECT COUNT(*) FROM sms_messages) +
+                (SELECT COUNT(*) FROM portal_access) AS cnt
+            """
+        )
+        return bool(row and row["cnt"])
 
     def scan_overdue_leads(self):
         rows = self.db.fetchall(
@@ -138,44 +187,39 @@ class AutomationEngine:
             )
 
     def scan_schedule_load(self):
-        max_jobs = int(float(self.db.setting("max_jobs_per_day")))
+        max_load = float(self.db.setting("max_jobs_per_day"))
         df = self.db.fetch_df(
             """
-            SELECT job_date, COUNT(*) AS jobs
+            SELECT
+                job_date,
+                COUNT(*) AS jobs,
+                SUM(CASE WHEN lower(job_type) LIKE '%turn%' THEN 1.5 ELSE 1 END) AS load_score
             FROM jobs
             WHERE archived = 0 AND status IN ('scheduled', 'in_progress')
             GROUP BY job_date
-            HAVING COUNT(*) > ?
+            HAVING load_score > ?
             ORDER BY job_date
             """,
-            (max_jobs,),
+            (max_load,),
         )
         if df.empty:
             return
 
         for _, r in df.iterrows():
-            job = self.db.fetchone(
-                """
-                SELECT id FROM jobs
-                WHERE archived = 0 AND status = 'scheduled' AND job_date = ?
-                ORDER BY created_at DESC LIMIT 1
-                """,
-                (r["job_date"],),
+            self.push_alert(
+                "warning",
+                "schedule_overload",
+                (
+                    f"Schedule load high on {r['job_date']}: "
+                    f"{int(r['jobs'])} jobs, load score {float(r['load_score']):.1f}/{max_load:.1f}"
+                ),
+                {
+                    "job_date": r["job_date"],
+                    "jobs": int(r["jobs"]),
+                    "load_score": float(r["load_score"]),
+                    "max_load": max_load,
+                },
             )
-            if job:
-                new_date = (parse_date(r["job_date"]) + timedelta(days=1)).strftime("%Y-%m-%d")
-                self.create_approval(
-                    "reschedule_job",
-                    {"job_id": job["id"], "new_date": new_date},
-                    "high",
-                    f"Overload on {r['job_date']}. Suggested move to {new_date}",
-                )
-                self.push_alert(
-                    "warning",
-                    "schedule_overload",
-                    f"Schedule overload on {r['job_date']}",
-                    {"job_id": job["id"]},
-                )
 
     def scan_pipeline_health(self):
         threshold = int(float(self.db.setting("low_pipeline_threshold_14d")))
@@ -192,7 +236,7 @@ class AutomationEngine:
         )
         count = int(row["cnt"]) if row else 0
         if count < threshold:
-            self.push_alert(
+            self.replace_alert(
                 "info",
                 "self_promo",
                 f"Pipeline below target: {count} scheduled jobs in next 14 days",
@@ -214,7 +258,7 @@ class AutomationEngine:
         )
         count = int(row["cnt"]) if row else 0
         if count >= threshold:
-            self.push_alert(
+            self.replace_alert(
                 "info",
                 "self_care",
                 f"High workload next 7 days: {count} jobs",

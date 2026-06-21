@@ -20,6 +20,24 @@ class SMSService:
         lead_id=None,
         approval_required=False,
     ):
+        existing = self.db.fetchone(
+            """
+            SELECT id FROM sms_messages
+            WHERE archived = 0
+              AND status IN ('queued', 'manual-send')
+              AND phone = ?
+              AND body = ?
+              AND message_type = ?
+              AND COALESCE(client_id, '') = COALESCE(?, '')
+              AND COALESCE(lead_id, '') = COALESCE(?, '')
+            LIMIT 1
+            """,
+            (phone, body, message_type, client_id, lead_id),
+        )
+        if existing:
+            return existing["id"]
+
+        message_id = new_id()
         self.db.execute(
             """
             INSERT INTO sms_messages(
@@ -29,7 +47,7 @@ class SMSService:
             VALUES(?, ?, ?, ?, ?, 'outbound', ?, ?, 'queued', NULL, NULL, NULL, ?, 0)
             """,
             (
-                new_id(),
+                message_id,
                 now_ts(),
                 client_id,
                 lead_id,
@@ -39,6 +57,7 @@ class SMSService:
                 1 if approval_required else 0,
             ),
         )
+        return message_id
 
     def send_queued(self):
         self.refresh()

@@ -1,3 +1,4 @@
+from contextlib import closing
 import sqlite3
 import pandas as pd
 
@@ -165,6 +166,22 @@ CREATE TABLE IF NOT EXISTS portal_access (
     archived INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY(client_id) REFERENCES clients(id)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_active_name
+ON clients(name COLLATE NOCASE)
+WHERE archived = 0;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_client_date
+ON jobs(client_id, job_date)
+WHERE archived = 0;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_portal_access_active_client
+ON portal_access(client_id)
+WHERE archived = 0;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_active_job
+ON invoices(job_id)
+WHERE archived = 0 AND job_id IS NOT NULL;
 """
 
 
@@ -179,29 +196,30 @@ class DB:
         return con
 
     def _init(self):
-        with self.conn() as con:
+        with closing(self.conn()) as con:
             con.executescript(SCHEMA)
             for k, v in DEFAULT_SETTINGS.items():
                 con.execute(
                     "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                     (k, v),
                 )
+            con.commit()
 
     def execute(self, sql, params=()):
-        with self.conn() as con:
+        with closing(self.conn()) as con:
             con.execute(sql, params)
             con.commit()
 
     def fetchone(self, sql, params=()):
-        with self.conn() as con:
+        with closing(self.conn()) as con:
             return con.execute(sql, params).fetchone()
 
     def fetchall(self, sql, params=()):
-        with self.conn() as con:
+        with closing(self.conn()) as con:
             return con.execute(sql, params).fetchall()
 
     def fetch_df(self, sql, params=()):
-        with self.conn() as con:
+        with closing(self.conn()) as con:
             return pd.read_sql_query(sql, con, params=params)
 
     def set_setting(self, key, value):

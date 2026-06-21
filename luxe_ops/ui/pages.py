@@ -1,4 +1,6 @@
+import calendar
 from datetime import date, timedelta
+from html import escape
 
 import pandas as pd
 import streamlit as st
@@ -14,6 +16,270 @@ def _download_csv(df, file_name, label):
         file_name=file_name,
         mime="text/csv",
     )
+
+
+def _active_client_by_name(db, name):
+    return db.fetchone(
+        """
+        SELECT id, name
+        FROM clients
+        WHERE archived = 0 AND lower(name) = lower(?)
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (name.strip(),),
+    )
+
+
+def _active_job_on_date(db, client_id, job_date):
+    job_date_text = job_date.strftime("%Y-%m-%d") if hasattr(job_date, "strftime") else str(job_date)
+    return db.fetchone(
+        """
+        SELECT id
+        FROM jobs
+        WHERE archived = 0
+          AND client_id = ?
+          AND job_date = ?
+        LIMIT 1
+        """,
+        (client_id, job_date_text),
+    )
+
+
+def _render_schedule_calendar(db):
+    today = date.today()
+    month_names = list(calendar.month_name)[1:]
+    clients = db.fetch_df(
+        "SELECT id, name FROM clients WHERE archived = 0 ORDER BY name"
+    )
+
+    c1, c2, c3 = st.columns([1.2, 0.8, 1.4])
+    selected_month = c1.selectbox(
+        "Month",
+        month_names,
+        index=today.month - 1,
+        key="calendar_month",
+    )
+    selected_year = int(
+        c2.number_input(
+            "Year",
+            min_value=2020,
+            max_value=2035,
+            value=today.year,
+            step=1,
+            key="calendar_year",
+        )
+    )
+
+    client_options = ["All properties"]
+    if not clients.empty:
+        client_options.extend(clients["name"].tolist())
+    selected_client = c3.selectbox(
+        "Property",
+        client_options,
+        key="calendar_property",
+    )
+
+    month = month_names.index(selected_month) + 1
+    start = date(selected_year, month, 1)
+    last_day = calendar.monthrange(selected_year, month)[1]
+    end = date(selected_year, month, last_day)
+
+    params = [start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")]
+    client_filter = ""
+    if selected_client != "All properties":
+        client_filter = " AND c.name = ?"
+        params.append(selected_client)
+
+    jobs = db.fetch_df(
+        f"""
+        SELECT j.job_date, c.name AS client, j.job_type, j.status, j.notes
+        FROM jobs j
+        JOIN clients c ON c.id = j.client_id
+        WHERE j.archived = 0
+          AND j.job_date BETWEEN ? AND ?
+          {client_filter}
+        ORDER BY j.job_date, c.name, j.job_type
+        """,
+        tuple(params),
+    )
+
+    jobs_by_day = {}
+    for _, row in jobs.iterrows():
+        jobs_by_day.setdefault(row["job_date"], []).append(row)
+
+    weeks = calendar.Calendar(firstweekday=0).monthdatescalendar(selected_year, month)
+    weekday_labels = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    weekday_classes = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+    html_parts = [
+        """
+        <style>
+            .luxe-calendar-shell {
+                width: 100%;
+                overflow-x: auto;
+                margin-top: 0.5rem;
+            }
+            .luxe-calendar-title {
+                text-align: center;
+                font-size: 1.7rem;
+                font-weight: 800;
+                margin: 0.25rem 0 0.75rem;
+                color: #111827;
+            }
+            .luxe-calendar {
+                min-width: 1050px;
+                border: 4px solid #111;
+                border-collapse: collapse;
+                table-layout: fixed;
+                width: 100%;
+                background: #fff;
+            }
+            .luxe-calendar th {
+                color: #111;
+                font-size: 1.05rem;
+                font-weight: 800;
+                text-transform: lowercase;
+                border: 4px solid #111;
+                padding: 0.35rem 0.5rem;
+                letter-spacing: 0;
+            }
+            .luxe-calendar th.mon { background: #3dde88; }
+            .luxe-calendar th.tue { background: #f45fbd; }
+            .luxe-calendar th.wed { background: #42b9ee; }
+            .luxe-calendar th.thu { background: #fbff5c; }
+            .luxe-calendar th.fri { background: #c665dd; }
+            .luxe-calendar th.sat { background: #5dd6dd; }
+            .luxe-calendar th.sun { background: #ffa554; }
+            .luxe-calendar td {
+                height: 150px;
+                vertical-align: top;
+                border: 4px solid #111;
+                padding: 0.35rem;
+                background: #fff;
+            }
+            .luxe-calendar td.outside {
+                background: #f4f4f5;
+                color: #71717a;
+            }
+            .luxe-calendar .day-number {
+                display: inline-block;
+                min-width: 1.8rem;
+                height: 1.8rem;
+                line-height: 1.8rem;
+                text-align: center;
+                font-weight: 800;
+                color: #111827;
+                background: #fff;
+                border: 2px solid #111;
+                margin-bottom: 0.25rem;
+            }
+            .luxe-calendar .today .day-number {
+                background: #111827;
+                color: #fff;
+            }
+            .luxe-calendar .job {
+                display: block;
+                border: 2px solid #111;
+                padding: 0.22rem 0.3rem;
+                margin-top: 0.25rem;
+                font-size: 0.78rem;
+                line-height: 1.15;
+                color: #111827;
+                background: #e8f7ff;
+                overflow-wrap: anywhere;
+            }
+            .luxe-calendar .job.turn {
+                background: #ffe58a;
+            }
+            .luxe-calendar .job.completed {
+                background: #e4e4e7;
+                color: #52525b;
+            }
+            .luxe-calendar .job.in-progress {
+                background: #bbf7d0;
+            }
+            .luxe-calendar .job-type {
+                font-weight: 800;
+            }
+            .luxe-calendar-legend {
+                display: flex;
+                gap: 0.75rem;
+                flex-wrap: wrap;
+                margin: 0.5rem 0 0.25rem;
+                font-size: 0.85rem;
+                color: #27272a;
+            }
+            .luxe-calendar-legend span {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.35rem;
+            }
+            .luxe-calendar-legend i {
+                width: 1rem;
+                height: 1rem;
+                display: inline-block;
+                border: 2px solid #111;
+            }
+            .legend-regular { background: #e8f7ff; }
+            .legend-turn { background: #ffe58a; }
+            .legend-completed { background: #e4e4e7; }
+        </style>
+        """
+    ]
+    html_parts.append(
+        f"<div class='luxe-calendar-title'>{escape(selected_month)} {selected_year}</div>"
+    )
+    html_parts.append(
+        """
+        <div class='luxe-calendar-legend'>
+            <span><i class='legend-regular'></i>Regular clean</span>
+            <span><i class='legend-turn'></i>Turn / same-day</span>
+            <span><i class='legend-completed'></i>Completed</span>
+        </div>
+        """
+    )
+    html_parts.append("<div class='luxe-calendar-shell'><table class='luxe-calendar'>")
+    html_parts.append("<thead><tr>")
+    for label, css_class in zip(weekday_labels, weekday_classes):
+        html_parts.append(f"<th class='{css_class}'>{label.lower()}</th>")
+    html_parts.append("</tr></thead><tbody>")
+
+    for week in weeks:
+        html_parts.append("<tr>")
+        for day in week:
+            classes = []
+            if day.month != month:
+                classes.append("outside")
+            if day == today:
+                classes.append("today")
+            class_attr = f" class='{' '.join(classes)}'" if classes else ""
+            day_key = day.strftime("%Y-%m-%d")
+            html_parts.append(f"<td{class_attr}>")
+            html_parts.append(f"<span class='day-number'>{day.day}</span>")
+            if day.month == month:
+                for job in jobs_by_day.get(day_key, []):
+                    job_type = str(job["job_type"] or "")
+                    status = str(job["status"] or "")
+                    job_classes = ["job"]
+                    if "turn" in job_type.lower():
+                        job_classes.append("turn")
+                    if status == "completed":
+                        job_classes.append("completed")
+                    elif status == "in_progress":
+                        job_classes.append("in-progress")
+                    html_parts.append(
+                        "<span class='{}'><span class='job-type'>{}</span><br>{}</span>".format(
+                            " ".join(job_classes),
+                            escape(job_type),
+                            escape(str(job["client"] or "")),
+                        )
+                    )
+            html_parts.append("</td>")
+        html_parts.append("</tr>")
+
+    html_parts.append("</tbody></table></div>")
+    st.markdown("".join(html_parts), unsafe_allow_html=True)
 
 
 def run_app(db, auto, finance, quotes, sms):
@@ -75,6 +341,9 @@ def run_app(db, auto, finance, quotes, sms):
         c3.metric("Profit MTD", money(metrics["month_profit"]))
         c4.metric("Outstanding A/R", money(metrics["outstanding_ar"]))
 
+        st.subheader("Schedule Calendar")
+        _render_schedule_calendar(db)
+
         st.subheader("Open Alerts")
         alerts = db.fetch_df(
             "SELECT id, created_at, level, category, message FROM alerts WHERE archived = 0 AND resolved = 0 ORDER BY created_at DESC"
@@ -124,30 +393,45 @@ def run_app(db, auto, finance, quotes, sms):
             submitted = st.form_submit_button("Create Lead")
 
             if submitted and name.strip():
-                db.execute(
+                duplicate = db.fetchone(
                     """
-                    INSERT INTO leads(
-                        id, created_at, name, phone, address, source, desired_frequency,
-                        condition, priority_focus, follow_up_date, status, notes, archived
-                    )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, 0)
+                    SELECT id
+                    FROM leads
+                    WHERE archived = 0
+                      AND status IN ('new', 'contacted', 'quoted')
+                      AND lower(name) = lower(?)
+                      AND COALESCE(phone, '') = ?
+                    LIMIT 1
                     """,
-                    (
-                        new_id(),
-                        now_ts(),
-                        name.strip(),
-                        lead_phone.strip(),
-                        address.strip(),
-                        source,
-                        desired_frequency,
-                        condition,
-                        priority,
-                        follow_up.strftime("%Y-%m-%d"),
-                        notes.strip(),
-                    ),
+                    (name.strip(), lead_phone.strip()),
                 )
-                db.log("lead_created", name)
-                st.rerun()
+                if duplicate:
+                    st.warning(f"Open lead already exists: {duplicate['id']}")
+                else:
+                    db.execute(
+                        """
+                        INSERT INTO leads(
+                            id, created_at, name, phone, address, source, desired_frequency,
+                            condition, priority_focus, follow_up_date, status, notes, archived
+                        )
+                        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, 0)
+                        """,
+                        (
+                            new_id(),
+                            now_ts(),
+                            name.strip(),
+                            lead_phone.strip(),
+                            address.strip(),
+                            source,
+                            desired_frequency,
+                            condition,
+                            priority,
+                            follow_up.strftime("%Y-%m-%d"),
+                            notes.strip(),
+                        ),
+                    )
+                    db.log("lead_created", name)
+                    st.rerun()
 
         leads = db.fetch_df(
             "SELECT id, name, phone, address, desired_frequency, condition, follow_up_date, status FROM leads WHERE archived = 0 ORDER BY created_at DESC"
@@ -163,30 +447,36 @@ def run_app(db, auto, finance, quotes, sms):
                 submitted = st.form_submit_button("Convert to Client")
                 if submitted:
                     lead = db.fetchone("SELECT * FROM leads WHERE id = ?", (lead_id,))
-                    client_id = new_id()
-                    db.execute(
-                        """
-                        INSERT INTO clients(
-                            id, created_at, name, phone, address, frequency,
-                            recurring_rate, status, notes, archived
+                    existing_client = _active_client_by_name(db, lead["name"])
+                    if existing_client:
+                        db.execute("UPDATE leads SET status = 'converted' WHERE id = ?", (lead_id,))
+                        db.log("lead_converted_existing_client", f"{lead_id}:{existing_client['id']}")
+                        st.warning(f"Client already exists: {existing_client['name']}")
+                    else:
+                        client_id = new_id()
+                        db.execute(
+                            """
+                            INSERT INTO clients(
+                                id, created_at, name, phone, address, frequency,
+                                recurring_rate, status, notes, archived
+                            )
+                            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                            """,
+                            (
+                                client_id,
+                                now_ts(),
+                                lead["name"],
+                                lead["phone"],
+                                lead["address"],
+                                lead["desired_frequency"],
+                                recurring_rate,
+                                status,
+                                lead["notes"],
+                            ),
                         )
-                        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-                        """,
-                        (
-                            client_id,
-                            now_ts(),
-                            lead["name"],
-                            lead["phone"],
-                            lead["address"],
-                            lead["desired_frequency"],
-                            recurring_rate,
-                            status,
-                            lead["notes"],
-                        ),
-                    )
-                    db.execute("UPDATE leads SET status = 'converted' WHERE id = ?", (lead_id,))
-                    db.log("lead_converted", lead_id)
-                    st.rerun()
+                        db.execute("UPDATE leads SET status = 'converted' WHERE id = ?", (lead_id,))
+                        db.log("lead_converted", lead_id)
+                        st.rerun()
 
     with tabs[2]:
         clients = db.fetch_df(
@@ -371,45 +661,53 @@ def run_app(db, auto, finance, quotes, sms):
                     client_id = client["id"] if client else None
 
                     if not client_id and create_client:
-                        client_id = new_id()
-                        db.execute(
-                            """
-                            INSERT INTO clients(id, created_at, name, phone, address, frequency, recurring_rate, status, notes, archived)
-                            VALUES(?, ?, ?, ?, ?, ?, ?, 'active', ?, 0)
-                            """,
-                            (
-                                client_id,
-                                now_ts(),
-                                q["client_name"],
-                                q["phone"],
-                                q["address"],
-                                "Unsure",
-                                float(db.setting("recurring_biweekly_rate")),
-                                q["notes"],
-                            ),
-                        )
+                        existing_client = _active_client_by_name(db, q["client_name"])
+                        if existing_client:
+                            client_id = existing_client["id"]
+                        else:
+                            client_id = new_id()
+                            db.execute(
+                                """
+                                INSERT INTO clients(id, created_at, name, phone, address, frequency, recurring_rate, status, notes, archived)
+                                VALUES(?, ?, ?, ?, ?, ?, ?, 'active', ?, 0)
+                                """,
+                                (
+                                    client_id,
+                                    now_ts(),
+                                    q["client_name"],
+                                    q["phone"],
+                                    q["address"],
+                                    "Unsure",
+                                    float(db.setting("recurring_biweekly_rate")),
+                                    q["notes"],
+                                ),
+                            )
 
                     if client_id:
-                        db.execute(
-                            """
-                            INSERT INTO jobs(id, created_at, client_id, job_date, job_type, hours_estimate, actual_hours, amount, status, notes, archived)
-                            VALUES(?, ?, ?, ?, ?, ?, NULL, ?, 'scheduled', ?, 0)
-                            """,
-                            (
-                                new_id(),
-                                now_ts(),
-                                client_id,
-                                job_date.strftime("%Y-%m-%d"),
-                                q["service_type"],
-                                q["high_hours"],
-                                q["final_amount"] or q["recommended"],
-                                q["notes"],
-                            ),
-                        )
-                        db.execute("UPDATE quotes SET status = 'scheduled' WHERE id = ?", (quote_id,))
-                        db.log("quote_converted_to_job", quote_id)
-                        st.success("Quote converted to job")
-                        st.rerun()
+                        existing_job = _active_job_on_date(db, client_id, job_date)
+                        if existing_job:
+                            st.warning(f"Job already exists for this property/date: {existing_job['id']}")
+                        else:
+                            db.execute(
+                                """
+                                INSERT INTO jobs(id, created_at, client_id, job_date, job_type, hours_estimate, actual_hours, amount, status, notes, archived)
+                                VALUES(?, ?, ?, ?, ?, ?, NULL, ?, 'scheduled', ?, 0)
+                                """,
+                                (
+                                    new_id(),
+                                    now_ts(),
+                                    client_id,
+                                    job_date.strftime("%Y-%m-%d"),
+                                    q["service_type"],
+                                    q["high_hours"],
+                                    q["final_amount"] or q["recommended"],
+                                    q["notes"],
+                                ),
+                            )
+                            db.execute("UPDATE quotes SET status = 'scheduled' WHERE id = ?", (quote_id,))
+                            db.log("quote_converted_to_job", quote_id)
+                            st.success("Quote converted to job")
+                            st.rerun()
                     else:
                         st.error("No client found and client creation disabled")
 
@@ -430,25 +728,29 @@ def run_app(db, auto, finance, quotes, sms):
                 notes = st.text_area("Notes", key="job_notes")
                 submitted = st.form_submit_button("Schedule Job")
                 if submitted:
-                    db.execute(
-                        """
-                        INSERT INTO jobs(id, created_at, client_id, job_date, job_type, hours_estimate,
-                                         actual_hours, amount, status, notes, archived)
-                        VALUES(?, ?, ?, ?, ?, ?, NULL, ?, 'scheduled', ?, 0)
-                        """,
-                        (
-                            new_id(),
-                            now_ts(),
-                            client_id,
-                            job_date.strftime("%Y-%m-%d"),
-                            job_type,
-                            hours_estimate,
-                            amount,
-                            notes.strip(),
-                        ),
-                    )
-                    db.log("job_created", f"{client_id}:{job_date}")
-                    st.rerun()
+                    existing_job = _active_job_on_date(db, client_id, job_date)
+                    if existing_job:
+                        st.warning(f"Job already exists for this property/date: {existing_job['id']}")
+                    else:
+                        db.execute(
+                            """
+                            INSERT INTO jobs(id, created_at, client_id, job_date, job_type, hours_estimate,
+                                             actual_hours, amount, status, notes, archived)
+                            VALUES(?, ?, ?, ?, ?, ?, NULL, ?, 'scheduled', ?, 0)
+                            """,
+                            (
+                                new_id(),
+                                now_ts(),
+                                client_id,
+                                job_date.strftime("%Y-%m-%d"),
+                                job_type,
+                                hours_estimate,
+                                amount,
+                                notes.strip(),
+                            ),
+                        )
+                        db.log("job_created", f"{client_id}:{job_date}")
+                        st.rerun()
 
         jobs = db.fetch_df(
             """
@@ -478,21 +780,26 @@ def run_app(db, auto, finance, quotes, sms):
                         (actual_hours, final_amount, job_id),
                     )
                     if create_invoice:
-                        db.execute(
-                            """
-                            INSERT INTO invoices(id, created_at, client_id, job_id, due_date, amount,
-                                                 status, paid_date, notes, archived)
-                            VALUES(?, ?, ?, ?, ?, ?, 'unpaid', NULL, '', 0)
-                            """,
-                            (
-                                new_id(),
-                                now_ts(),
-                                row["client_id"],
-                                job_id,
-                                due_date.strftime("%Y-%m-%d"),
-                                final_amount,
-                            ),
+                        existing_invoice = db.fetchone(
+                            "SELECT id FROM invoices WHERE archived = 0 AND job_id = ? LIMIT 1",
+                            (job_id,),
                         )
+                        if not existing_invoice:
+                            db.execute(
+                                """
+                                INSERT INTO invoices(id, created_at, client_id, job_id, due_date, amount,
+                                                     status, paid_date, notes, archived)
+                                VALUES(?, ?, ?, ?, ?, ?, 'unpaid', NULL, '', 0)
+                                """,
+                                (
+                                    new_id(),
+                                    now_ts(),
+                                    row["client_id"],
+                                    job_id,
+                                    due_date.strftime("%Y-%m-%d"),
+                                    final_amount,
+                                ),
+                            )
                         client_row = db.fetchone("SELECT name, phone FROM clients WHERE id = ?", (row["client_id"],))
                         if db.setting("sms_auto_invoice_notice") == "1" and client_row and client_row["phone"]:
                             sms.queue_invoice_notice(
@@ -779,64 +1086,13 @@ def run_app(db, auto, finance, quotes, sms):
                     st.rerun()
 
     with tabs[9]:
-        c1, c2, c3 = st.columns(3)
+        c1, c2 = st.columns(2)
         if c1.button("Run Scan Now"):
             auto.scan()
             st.rerun()
         if c2.button("Archive Now"):
             auto.archive_now()
             st.rerun()
-        if c3.button("Seed Demo Data"):
-            if db.fetchone("SELECT COUNT(*) AS cnt FROM clients")["cnt"] == 0:
-                client_id = new_id()
-                db.execute(
-                    """
-                    INSERT INTO clients(id, created_at, name, phone, address, frequency, recurring_rate, status, notes, archived)
-                    VALUES(?, ?, 'Jenn Demo', ?, '84332', 'Bi-Weekly', ?, 'active', 'Demo', 0)
-                    """,
-                    (client_id, now_ts(), db.setting("phone"), float(db.setting("recurring_biweekly_rate"))),
-                )
-                db.execute(
-                    """
-                    INSERT INTO jobs(id, created_at, client_id, job_date, job_type, hours_estimate, actual_hours, amount, status, notes, archived)
-                    VALUES(?, ?, ?, ?, 'Bi-Weekly', 3, NULL, ?, 'scheduled', '', 0)
-                    """,
-                    (
-                        new_id(),
-                        now_ts(),
-                        client_id,
-                        (date.today() + timedelta(days=1)).strftime("%Y-%m-%d"),
-                        float(db.setting("recurring_biweekly_rate")),
-                    ),
-                )
-                db.execute(
-                    """
-                    INSERT INTO invoices(id, created_at, client_id, job_id, due_date, amount, status, paid_date, notes, archived)
-                    VALUES(?, ?, ?, NULL, ?, 160, 'unpaid', NULL, '', 0)
-                    """,
-                    (new_id(), now_ts(), client_id, (date.today() - timedelta(days=3)).strftime("%Y-%m-%d")),
-                )
-                db.execute(
-                    """
-                    INSERT INTO leads(id, created_at, name, phone, address, source, desired_frequency, condition, priority_focus, follow_up_date, status, notes, archived)
-                    VALUES(?, ?, 'Warm Lead Demo', ?, 'Local', 'Flyer', 'Bi-Weekly', 'Average', 'Low-allergen', ?, 'quoted', 'Needs callback', 0)
-                    """,
-                    (
-                        new_id(),
-                        now_ts(),
-                        db.setting("phone"),
-                        (date.today() - timedelta(days=1)).strftime("%Y-%m-%d"),
-                    ),
-                )
-                db.execute(
-                    """
-                    INSERT INTO expenses(id, created_at, expense_date, category, vendor, amount, notes)
-                    VALUES(?, ?, ?, 'Supplies', 'Demo Vendor', 42.5, 'Seeded')
-                    """,
-                    (new_id(), now_ts(), today_str()),
-                )
-                auto.scan()
-                st.rerun()
 
         health = []
         health.append(["Leads", "OK" if leads_open > 0 else "ATTENTION", f"{leads_open} active leads"])
@@ -860,7 +1116,12 @@ def run_app(db, auto, finance, quotes, sms):
 
             c7, c8, c9 = st.columns(3)
             recurring = c7.number_input("Recurring Rate", min_value=0.0, value=float(db.setting("recurring_biweekly_rate")))
-            max_jobs = c8.number_input("Max Jobs / Day", min_value=1.0, value=float(db.setting("max_jobs_per_day")))
+            max_jobs = c8.number_input(
+                "Daily Load Limit",
+                min_value=1.0,
+                value=float(db.setting("max_jobs_per_day")),
+                help="Regular cleans count as 1.0. Turn cleans count as 1.5. Alerts fire only above this daily score.",
+            )
             min_pipeline = c9.number_input("Min Jobs next 14d", min_value=0.0, value=float(db.setting("low_pipeline_threshold_14d")))
 
             c10, c11, c12 = st.columns(3)

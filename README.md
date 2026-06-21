@@ -44,9 +44,10 @@ The app uses a local SQLite database at `luxe_ops.db`. It is created automatical
 
 No database setup command is required.
 
-## Seed
+## Clean Database
 
-No seed command is configured.
+The app creates schema and production settings only. It does not create example
+leads, clients, jobs, invoices, expenses, messages, or portal access.
 
 ## Environment Variables
 
