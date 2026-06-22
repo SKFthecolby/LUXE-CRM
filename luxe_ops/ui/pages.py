@@ -122,10 +122,14 @@ def _render_schedule_calendar(db):
             }
             .luxe-calendar-title {
                 text-align: center;
-                font-size: 1.7rem;
+                font-size: 1.85rem;
                 font-weight: 800;
-                margin: 0.25rem 0 0.75rem;
-                color: #111827;
+                margin: 0.25rem 0 0.65rem;
+                color: #0b1220;
+                background: #ffffff;
+                border: 3px solid #111;
+                padding: 0.35rem 0.75rem;
+                text-transform: uppercase;
             }
             .luxe-calendar {
                 min-width: 1050px;
@@ -206,9 +210,13 @@ def _render_schedule_calendar(db):
                 display: flex;
                 gap: 0.75rem;
                 flex-wrap: wrap;
-                margin: 0.5rem 0 0.25rem;
-                font-size: 0.85rem;
-                color: #27272a;
+                margin: 0.5rem 0 0.45rem;
+                padding: 0.45rem 0.65rem;
+                font-size: 0.95rem;
+                font-weight: 800;
+                color: #0b1220;
+                background: #ffffff;
+                border: 3px solid #111;
             }
             .luxe-calendar-legend span {
                 display: inline-flex;
@@ -221,9 +229,9 @@ def _render_schedule_calendar(db):
                 display: inline-block;
                 border: 2px solid #111;
             }
-            .legend-regular { background: #e8f7ff; }
-            .legend-turn { background: #ffe58a; }
-            .legend-completed { background: #e4e4e7; }
+            .legend-regular { background: #8bdcff; }
+            .legend-turn { background: #ffd43b; }
+            .legend-completed { background: #a1a1aa; }
         </style>
         """
     ]

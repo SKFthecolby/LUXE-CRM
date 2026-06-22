@@ -14,6 +14,12 @@ python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
+Streamlit Community Cloud entrypoint:
+
+```text
+streamlit_app.py
+```
+
 Client portal:
 
 ```bash
